@@ -1,124 +1,141 @@
 --[[
-    Atingle init.lua
+    Atingle Professional Environment Wrapper
+    Version: 2.0 (Optimized)
 --]]
 
 local getgenv = getgenv or function() return _G end
 local env = getgenv()
 
+-- Cache services for speed
 local HttpService = game:GetService("HttpService")
 local CoreGui = game:GetService("CoreGui")
+local Stats = game:GetService("Stats")
 
-local function protect(fn)
-    return (newcclosure or function(f) return f end)(fn)
+--------------------------------------------------------------------------------
+-- UTILITY: Closure Protection
+--------------------------------------------------------------------------------
+local function make_readonly(t)
+    local mt = getmetatable(t) or {}
+    mt.__newindex = function(_, k)
+        error(string.format("Attempt to modify read-only table: %s", tostring(k)), 2)
+    end
+    setmetatable(t, mt)
 end
 
-local api = {
-    getgenv = getgenv,
-    getrenv = getrenv or function() return game end,
-    getreg  = getreg  or function() return debug.getregistry() end,
-    getgc   = getgc   or function() return debug.getgc() end,
-    getsenv = getsenv or function(_) return nil end,
-    getfenv = getfenv or function(_) return nil end,
-    setfenv = setfenv or function(_, _) end,
-    getcallingscript = getcallingscript or function() return nil end,
-    
-    hookfunction   = hookfunction   or function(_, new) return new end,
-    newcclosure    = newcclosure    or function(fn) return fn end,
-    replaceclosure = replaceclosure or function(_, new) return new end,
-    checkcaller    = checkcaller    or function() return false end,
-    
-    mouse1click  = mouse1click  or function() end,
-    mouse1press  = mouse1press  or function() end,
-    mouse1release = mouse1release or function() end,
-    mouse2click  = mouse2click  or function() end,
-    mouse2press  = mouse2press  or function() end,
-    mouse2release = mouse2release or function() end,
-    mousemoverel = mousemoverel or function(_, _) end,
-    mousemoveabs = mousemoveabs or function(_, _) end,
-    keypress     = keypress     or function(_) end,
-    keyrelease   = keyrelease   or function(_) end,
+-- Professional wrapper for C-closures
+local function protect(fn, name)
+    local protected = (newcclosure or function(f) return f end)(fn)
+    -- If your C-side supports it, hook debug.getinfo here to hide the 'protected' flag
+    return protected
+end
 
-    protect_gui  = protectgui   or function(gui) return gui end,
-    setclipboard = setclipboard or function(text) warn("[setclipboard] Not Currently available") end,
+--------------------------------------------------------------------------------
+-- API DEFINITION
+--------------------------------------------------------------------------------
+local api = {}
+
+-- Environment Access
+api.getgenv = getgenv
+api.getrenv = getrenv or function() return _G end
+api.getreg  = getreg  or function() return debug.getregistry() end
+api.getgc   = getgc   or function() return debug.getgc() end
+
+-- UI Isolation (Hide your UI from the game)
+api.gethui = function()
+    if gethui then return gethui() end
+    -- Fallback to a hidden folder in CoreGui
+    local h = CoreGui:FindFirstChild("AtingleHidden")
+    if not h then
+        h = Instance.new("Folder")
+        h.Name = "AtingleHidden"
+        h.Parent = CoreGui
+    end
+    return h
+end
+
+-- Script Detection Spoofer
+api.checkcaller = checkcaller or function() 
+    -- If C-side hasn't implemented this, we return false to stay safe
+    return false 
+end
+
+-- File & Web System
+api.request = request or http_request or function(options)
+    assert(type(options) == "table", "Invalid options table")
+    local method = options.Method or "GET"
+    local url = options.Url
+    
+    local success, response = pcall(function()
+        if method == "GET" then
+            return HttpService:GetAsync(url)
+        elseif method == "POST" then
+            return HttpService:PostAsync(url, options.Body or "")
+        end
+    end)
+    
+    return {
+        Success = success,
+        StatusCode = success and 200 or 500,
+        Body = response or "Request Failed",
+        Headers = {}
+    }
+end
+
+-- Aliases for broader script support
+api.http_request = api.request
+api.HttpGet = function(self, url) return api.request({Url = url, Method = "GET"}).Body end
+
+--------------------------------------------------------------------------------
+-- DEBUG LIBRARY ENHANCEMENT
+--------------------------------------------------------------------------------
+local debug_overrides = {
+    getupvalue    = debug.getupvalue,
+    setupvalue    = debug.setupvalue,
+    getconstants  = debug.getconstants or function() return {} end,
+    getproto      = debug.getproto,
+    getprotos     = debug.getprotos or function() return {} end,
+    getinfo       = debug.getinfo,
 }
 
 env.debug = env.debug or {}
-local debug_lib = {
-    getupvalue    = debug.getupvalue    or function() end,
-    setupvalue    = debug.setupvalue    or function() end,
-    getinfo       = debug.getinfo       or function() end,
-    getconstants  = debug.getconstants  or function() return {} end,
-    getproto      = debug.getproto      or function() end,
-    getprotos     = debug.getprotos     or function() return {} end,
-    setconstant   = debug.setconstant   or function() end,
-}
-
-for name, fn in pairs(debug_lib) do
-    env.debug[name] = fn
-    env[name] = fn
+for name, func in pairs(debug_overrides) do
+    local p_func = protect(func, name)
+    env.debug[name] = p_func
+    env[name] = p_func -- Add to global for convenience
 end
 
-env.request = request or http_request or function(opts)
-	if type(opts) ~= "table" or not opts.Url then
-		return { StatusCode = 400, Body = "invalid request" }
-	end
-
-	local ok, result = pcall(function()
-		if opts.Method == "POST" then
-			return HttpService:PostAsync(opts.Url, opts.Body or "")
-		else
-			return HttpService:GetAsync(opts.Url)
-		end
-	end)
-
-	return {
-		StatusCode = ok and 200 or 500,
-		Body = ok and result or "request failed"
-	}
-end
-
-env.http_get = function(url)
-	local ok, res = pcall(function()
-		return HttpService:GetAsync(url)
-	end)
-	return ok and res or nil
-end
-
-env.gethui = gethui or function()
-    local core = game:GetService("CoreGui")
-    for _, gui in ipairs(core:GetChildren()) do
-        if gui:IsA("ScreenGui") then
-            return gui
-        end
-    end
-    return core
-end
-
-env.reverse_string = function(str)
-    return str:reverse()
-end
-
+--------------------------------------------------------------------------------
+-- EVENT SYSTEM (Signals)
+--------------------------------------------------------------------------------
 local Event = {}
 Event.__index = Event
 
 function Event.new()
-    local self = setmetatable({}, Event)
-    self._event = Instance.new("BindableEvent")
-    return self
+    return setmetatable({ _instance = Instance.new("BindableEvent") }, Event)
 end
 
-function Event:connect(callback)
-    return self._event.Event:Connect(callback)
+function Event:Connect(callback)
+    return self._instance.Event:Connect(callback)
 end
 
-function Event:fire(...)
-    self._event:Fire(...)
+function Event:Fire(...)
+    self._instance:Fire(...)
 end
 
-env.Event = Event
+api.Signal = Event
+api.new_signal = Event.new
 
+--------------------------------------------------------------------------------
+-- INITIALIZATION
+--------------------------------------------------------------------------------
 for name, func in pairs(api) do
     if not env[name] then
-        env[name] = func
+        env[name] = protect(func, name)
     end
 end
+
+-- Final touch: Identify the executor
+env.identifyexecutor = function() return "Atingle", "v2.0" end
+env.getexecutorname = env.identifyexecutor
+
+warn("Atingle Environment Loaded Successfully")
